@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 3 ]]; then
+  echo "Usage: $0 <csv-line> <runs-per-mode> <out-root>"
+  exit 1
+fi
+
+line="$1"
+runs="$2"
+OUT_ROOT="$3"
+
+JAVAMOP_AGENT="/home/tracemop/tracemop/scripts/no-track-no-stats-agent.jar"
+TRACEMOP_AGENT="/home/tracemop/tracemop/scripts/track-no-stats-agent.jar"
+
+IFS=',' read -r REPO_URL SHA MODULE_PATH FQ_TEST CATEGORY STATUS PR_LINK NOTES <<<"$line"
+REPO_DIR="$(basename "$REPO_URL" .git)"
+
+CLASS_PART="${FQ_TEST%.*}"
+METHOD_NAME="${FQ_TEST##*.}"
+CLASS_NAME="${CLASS_PART##*.}"
+BASE_SEL="${CLASS_NAME}#${METHOD_NAME}"
+TEST_SEL="$BASE_SEL"
+TEST_SEL_WC="${BASE_SEL}*"
+
+[[ -f "${JAVAMOP_AGENT}" ]] || { echo "Missing ${JAVAMOP_AGENT}"; exit 1; }
+[[ -f "${TRACEMOP_AGENT}" ]] || { echo "Missing ${TRACEMOP_AGENT}"; exit 1; }
+
+cd "$REPO_DIR"
+git checkout "$SHA"
+[[ -n "$MODULE_PATH" && "$MODULE_PATH" != "." ]] && cd "$MODULE_PATH"
+mkdir -p "$OUT_ROOT"
+
+cleanup_violations() {
+  find . -name "violation-counts*" -delete 2>/dev/null || true
+  find . -path "*/all-traces*" -name "violation-counts*" -delete 2>/dev/null || true
+}
+
+attempt_run() {
+  local selector="$1" run_dir="$2" agent_arg="$3" trace_env="$4" extra_env="$5" logfile="$6"
+
+  cleanup_violations
+  mkdir -p "$(dirname "$logfile")"
+  : > "$logfile"
+
+  # Force agent both via argLine (for surefire/failsafe) and MAVEN_OPTS (fallback)
+  local agent_opts="${agent_arg}"
+  local maven_opts="${agent_opts} ${MAVEN_OPTS:-}"
+
+  set +e
+  {
+    echo "[debug] selector=${selector}"
+    echo "[debug] agent_arg=${agent_arg}"
+    echo "[debug] MAVEN_OPTS=${maven_opts}"
+    echo "[debug] trace_env=${trace_env}"
+    echo "[debug] extra_env=${extra_env}"
+  } >> "${logfile}"
+
+  env ${trace_env} ${extra_env} MAVEN_OPTS="${maven_opts}" mvn \
+    -DargLine="${agent_opts}" \
+    -Dtest="${selector}" \
+    test >> "${logfile}" 2>&1
+  status=$?
+  set -e
+
+  summary_line=$(grep -E "Tests run:" "${logfile}" | tail -n 1 || true)
+  [[ -z "$summary_line" ]] && summary_line="No summary found"
+  no_tests=false
+  if [[ "$summary_line" =~ Tests\ run:\ 0 ]] || \
+     grep -qE "No tests were found|No tests matching pattern|No tests were executed" "${logfile}" 2>/dev/null; then
+    no_tests=true
+  fi
+  return 0
+}
+
+copy_violations() {
+  local run_dir="$1"
+  find . -maxdepth 6 -name "violation-counts*" -print0 2>/dev/null \
+    | xargs -0 -I{} cp {} "${run_dir}/" 2>/dev/null || true
+  find "${run_dir}/all-traces" -name "violation-counts*" -print0 2>/dev/null \
+    | xargs -0 -I{} cp {} "${run_dir}/" 2>/dev/null || true
+}
+
+run_suite() {
+  local mode="$1" agent_arg="$2" extra_env="$3" do_trace="$4"
+  for i in $(seq 1 "$runs"); do
+    local run_dir="${OUT_ROOT}/${mode}/run-${i}"
+    mkdir -p "${run_dir}"
+    local trace_env=""
+    if [[ "$do_trace" == "true" ]]; then
+      mkdir -p "${run_dir}/all-traces"
+      cat > "${run_dir}/.trace-db.config" <<EOF
+db=memory
+dumpDB=false
+EOF
+      trace_env="TRACEDB_PATH=${run_dir}/all-traces TRACEDB_CONFIG_PATH=${run_dir}/.trace-db.config TRACEDB_RANDOM=0 COLLECT_MONITORS=1 COLLECT_TRACES=1"
+    fi
+
+    echo "[${mode}] run ${i}/${runs} using selector: ${TEST_SEL}"
+    attempt_run "$TEST_SEL" "$run_dir" "$agent_arg" "$trace_env" "$extra_env" "${run_dir}/mvn.log"
+
+    if [[ "$mode" == "baseline" && "$i" -eq 1 && "$no_tests" == true && "$TEST_SEL" != "$TEST_SEL_WC" ]]; then
+      echo "No tests matched; retrying with wildcard ${TEST_SEL_WC} and using it for all remaining runs."
+      TEST_SEL="$TEST_SEL_WC"
+      attempt_run "$TEST_SEL" "$run_dir" "$agent_arg" "$trace_env" "$extra_env" "${run_dir}/mvn.log"
+    fi
+
+    {
+      echo "STATUS=${status}"
+      echo "SUMMARY=${summary_line}"
+      echo "TEST_SELECTOR=${TEST_SEL}"
+      echo "ARG_LINE=${agent_arg}"
+    } > "${run_dir}/result.txt"
+
+    if [[ "$mode" == "javamop" || "$mode" == "tracemop" ]]; then
+      copy_violations "${run_dir}"
+    fi
+  done
+}
+
+run_suite "baseline" "" "" "false"
+run_suite "javamop" "-javaagent:${JAVAMOP_AGENT}" "RVMLOGGINGLEVEL=UNIQUE" "false"
+run_suite "tracemop" "-javaagent:${TRACEMOP_AGENT}" "RVMLOGGINGLEVEL=UNIQUE" "true"
+
+echo "Outputs under ${OUT_ROOT}/{baseline,javamop,tracemop}/run-*/"
