@@ -21,11 +21,17 @@ fi
 
 git checkout "$SHA"
 
+MVN_MODULE_FLAGS="-Dsurefire.failIfNoSpecifiedTests=false"
+
 if [[ -n "$MODULE_PATH" && "$MODULE_PATH" != "." ]]; then
-  cd "$MODULE_PATH"
+  MVN_MODULE_FLAGS="-pl ${MODULE_PATH} -am ${MVN_MODULE_FLAGS}"
 fi
 
-# Prefetch dependencies
-mvn -q -DskipTests -DskipITs test-compile || true
+echo "installing modules with flags: $MVN_MODULE_FLAGS also (skipping tests)..."
+
+mvn $MVN_MODULE_FLAGS \
+    -DskipTests=true \
+    -Dmaven.test.skip=true \
+    install
 
 echo "Ready at: $(pwd)"

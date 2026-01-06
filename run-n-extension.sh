@@ -24,8 +24,14 @@ CLASS_FQ="${FQ_TEST%.*}"; METHOD="${FQ_TEST##*.}"
 SEL="${CLASS_FQ}#${METHOD}"; SEL_WC="${SEL}*"
 
 cd "$REPO_DIR"; git checkout "$SHA" >/dev/null
-[[ -n "$MODULE_PATH" && "$MODULE_PATH" != "." ]] && cd "$MODULE_PATH"
+
 mkdir -p "$OUT_ROOT"
+
+# Prepare Maven flags
+MVN_MODULE_FLAGS="-Dsurefire.failIfNoSpecifiedTests=false"
+if [[ -n "$MODULE_PATH" && "$MODULE_PATH" != "." ]]; then
+  MVN_MODULE_FLAGS="-pl ${MODULE_PATH} -am ${MVN_MODULE_FLAGS}"
+fi
 
 no_tests_found() { grep -qE "No tests|Tests run: 0," "$1"; }
 cleanup_violations() { find "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" -name "violation-counts*" -type f -delete 2>/dev/null || true; }
@@ -47,7 +53,14 @@ run_mvn() {
   esac
   echo "[${mode}] ${sel}"
   set +e
-  env "${envs[@]}" mvn -Dmaven.ext.class.path="$EXT" -DfailIfNoTests=true -Dtest="$sel" test >>"$logfile" 2>&1
+  
+  # August is goated: -DfailIfNoTests=true (covered by surefire flag), -Dmaven.test.failure.ignore (we want to fail on assertion errors)
+  env "${envs[@]}" mvn -Dmaven.ext.class.path="$EXT" \
+      $MVN_MODULE_FLAGS \
+      -DskipTests=false \
+      -Dmaven.test.skip=false \
+      -Dtest="$sel" test >>"$logfile" 2>&1
+  
   rc=$?
   set -e
   summary="$(grep -E "Tests run:" "$logfile" | tail -n 1 || true)"; [[ -z "$summary" ]] && summary="No summary found"
@@ -60,12 +73,8 @@ modes=(baseline javamop tracemop)
 started=0
 for mode in "${modes[@]}"; do
   if [[ -n "$START_VARIANT" && "$started" -eq 0 ]]; then
-    # skip variants until we reach the requested resume point
-    if [[ "$mode" != "$START_VARIANT" ]]; then
-      continue
-    fi
-    start_i="$START_RUN"
-    started=1
+    if [[ "$mode" != "$START_VARIANT" ]]; then continue; fi
+    start_i="$START_RUN"; started=1
   else
     start_i=1
   fi
@@ -100,7 +109,7 @@ for mode in "${modes[@]}"; do
   done
 done
 
-# Final sweep for any leftover all-traces
+# Final sweep
 if compgen -G "${OUT_ROOT}/tracemop/run-*/all-traces" > /dev/null; then
   echo "Compressing tracemop all-traces per run..."
   for run_dir in "${OUT_ROOT}"/tracemop/run-*; do
