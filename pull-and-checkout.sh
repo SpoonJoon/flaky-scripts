@@ -31,7 +31,6 @@ echo "installing modules with flags: $MVN_MODULE_FLAGS also (skipping tests)..."
 
 mvn $MVN_MODULE_FLAGS \
     -DskipTests=true \
-    -Dmaven.test.skip=true \
     install
 
 echo "Ready at: $(pwd)"
