@@ -55,6 +55,7 @@ run_mvn() {
       $MVN_MODULE_FLAGS \
       -DskipTests=false \
       -Dmaven.test.skip=false \
+      -Dgpg.skip=true \
       test >>"$logfile" 2>&1
 
   rc=$?
