@@ -21,7 +21,7 @@ AG_TRACE="/home/tracemop/tracemop/scripts/track-no-stats-agent.jar"
 IFS=',' read -r REPO_URL SHA MODULE_PATH FQ_TEST _ <<<"$line"
 REPO_DIR="$(basename "$REPO_URL" .git)"
 
-cd "$REPO_DIR"; git checkout "$SHA" >/dev/null
+cd "$REPO_DIR"  # checkout already done by pull-and-checkout-suite.sh
 
 mkdir -p "$OUT_ROOT"
 
