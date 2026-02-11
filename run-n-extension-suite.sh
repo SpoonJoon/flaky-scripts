@@ -25,12 +25,6 @@ cd "$REPO_DIR"  # checkout already done by pull-and-checkout-suite.sh
 
 mkdir -p "$OUT_ROOT"
 
-# Prepare Maven flags (no -Dtest selector for full suite)
-MVN_MODULE_FLAGS=""
-if [[ -n "$MODULE_PATH" && "$MODULE_PATH" != "." ]]; then
-  MVN_MODULE_FLAGS="-pl ${MODULE_PATH} -am"
-fi
-
 cleanup_violations() { find "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" -name "violation-counts*" -type f -delete 2>/dev/null || true; }
 copy_violations() { rm -f "$1"/violation-counts* 2>/dev/null || true; find . -name "violation-counts*" -type f -exec cp {} "$1/" \; 2>/dev/null || true; }
 
@@ -52,10 +46,11 @@ run_mvn() {
   set +e
 
   env "${envs[@]}" mvn -Dmaven.ext.class.path="$EXT" \
-      $MVN_MODULE_FLAGS \
       -DskipTests=false \
       -Dmaven.test.skip=false \
       -Dgpg.skip=true \
+      -Pall \
+      -fae \
       test >>"$logfile" 2>&1
 
   rc=$?
